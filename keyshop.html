@@ -366,6 +366,14 @@
 <script>
 (function(){
   // ---------- Firebase init ----------
+  if(typeof firebase === 'undefined'){
+    document.body.innerHTML = `<div style="padding:60px 24px; text-align:center; font-family:monospace; color:#FF3860;">
+      Firebase failed to load.<br><br>
+      This usually means the page is being previewed in a sandboxed environment that blocks external scripts.<br><br>
+      Deploy this file to GitHub Pages (or open it via a real web server) and it will work correctly.
+    </div>`;
+    return;
+  }
   const firebaseConfig = {
     apiKey: "AIzaSyAOqxIYGLa5qDPLxuN4v9VoHKShuoaF2vo",
     authDomain: "keyseller-d8a00.firebaseapp.com",
@@ -398,4 +406,316 @@
   // ---------- storage helpers (Firebase Realtime Database) ----------
   async function getTxns(){
     try{
-      
+      const snap = await txnsRef.once('value');
+      const val = snap.val();
+      if(!val) return [];
+      // val is an object keyed by firebase push-id -> convert to array, newest first
+      return Object.keys(val)
+        .map(k=>({ ...val[k], _fbKey:k }))
+        .sort((a,b)=> new Date(b.createdAt) - new Date(a.createdAt));
+    }catch(e){ console.error('getTxns error', e); return []; }
+  }
+  async function addTxn(record){
+    try{
+      const newRef = txnsRef.push();
+      await newRef.set(record);
+      return newRef.key;
+    }catch(e){ console.error('addTxn error', e); throw e; }
+  }
+  async function patchTxn(fbKey, patch){
+    try{ await txnsRef.child(fbKey).update(patch); }
+    catch(e){ console.error('patchTxn error', e); throw e; }
+  }
+  function genId(prefix){
+    return prefix + Date.now().toString().slice(-8) + Math.floor(Math.random()*900+100);
+  }
+
+  // ---------- secret admin unlock (tap brand logo 3x within 1.2s) ----------
+  (function(){
+    const zone = document.getElementById('brandTapZone');
+    const adminBtn = document.getElementById('secretAdminBtn');
+    // if already unlocked earlier this session, keep it visible
+    if(sessionStorage.getItem('nx_admin_unlocked')==='1'){
+      adminBtn.style.display = 'inline-block';
+    }
+    let taps = 0, tapTimer = null;
+    zone.addEventListener('click', ()=>{
+      taps++;
+      clearTimeout(tapTimer);
+      tapTimer = setTimeout(()=>{ taps = 0; }, 1200);
+      if(taps >= 3){
+        taps = 0;
+        clearTimeout(tapTimer);
+        adminBtn.style.display = 'inline-block';
+        sessionStorage.setItem('nx_admin_unlocked','1');
+        adminBtn.style.animation = 'fadeIn .3s ease';
+      }
+    });
+  })();
+
+  // ---------- nav ----------
+  const views = document.querySelectorAll('.view');
+  const navBtns = document.querySelectorAll('.nav-btn');
+  function showView(id){
+    views.forEach(v=>v.classList.remove('active'));
+    document.getElementById('view-'+id).classList.add('active');
+    navBtns.forEach(b=>b.classList.toggle('active', b.dataset.view===id));
+    if(id==='history') renderHistory();
+    if(id==='admin') renderAdmin();
+  }
+  navBtns.forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const target = btn.dataset.view;
+      if(target==='admin'){
+        showView(sessionStorage.getItem('nx_admin')==='1' ? 'admin' : 'admin-gate');
+      } else {
+        showView(target);
+      }
+    });
+  });
+
+  // ---------- shop: products ----------
+  const productGrid = document.getElementById('productGrid');
+  PRODUCTS.forEach(p=>{
+    const card = document.createElement('div');
+    card.className = 'product-card';
+    card.dataset.id = p.id;
+    card.innerHTML = `
+      <div class="product-check">✓</div>
+      <div class="product-icon">${p.icon}</div>
+      <div class="product-name">${p.name}</div>
+      <div class="product-tag">${p.tag}</div>
+    `;
+    card.addEventListener('click', ()=>{
+      document.querySelectorAll('.product-card').forEach(c=>c.classList.remove('selected'));
+      card.classList.add('selected');
+      state.product = p;
+      document.getElementById('durationBlock').style.display = 'block';
+      updateNextBtn();
+    });
+    productGrid.appendChild(card);
+  });
+
+  // ---------- shop: durations ----------
+  const durationList = document.getElementById('durationList');
+  DURATIONS.forEach(d=>{
+    const row = document.createElement('div');
+    row.className = 'duration-row';
+    row.dataset.id = d.id;
+    row.innerHTML = `
+      <div class="duration-left">
+        <div class="radio-dot"></div>
+        <div>
+          <div class="duration-days">${d.label}</div>
+          <div class="duration-meta">Full access · all features unlocked</div>
+        </div>
+      </div>
+      <div class="duration-price">₹${d.price}<sup>only / $</sup></div>
+    `;
+    row.addEventListener('click', ()=>{
+      document.querySelectorAll('.duration-row').forEach(r=>r.classList.remove('selected'));
+      row.classList.add('selected');
+      state.duration = d;
+      updateNextBtn();
+    });
+    durationList.appendChild(row);
+  });
+
+  function updateNextBtn(){
+    document.getElementById('nextBtn').disabled = !(state.product && state.duration);
+  }
+
+  document.getElementById('nextBtn').addEventListener('click', ()=>{
+    if(!state.product || !state.duration) return;
+    document.getElementById('orderLabel').textContent = `${state.product.name} · ${state.duration.label}`;
+    document.getElementById('orderPrice').textContent = `₹${state.duration.price}`;
+    document.getElementById('payAmount').textContent = `₹${state.duration.price}`;
+    showView('payment');
+    startCountdown(5*60);
+  });
+
+  document.getElementById('backToShop').addEventListener('click', ()=>{
+    clearInterval(state.countdownTimer);
+    showView('shop');
+  });
+
+  // ---------- countdown ----------
+  function startCountdown(seconds){
+    clearInterval(state.countdownTimer);
+    const el = document.getElementById('countdownTime');
+    el.classList.remove('expired');
+    let remaining = seconds;
+    function tick(){
+      const m = Math.floor(remaining/60).toString().padStart(2,'0');
+      const s = (remaining%60).toString().padStart(2,'0');
+      el.textContent = `${m}:${s}`;
+      if(remaining<=0){
+        clearInterval(state.countdownTimer);
+        el.textContent = '00:00';
+        el.classList.add('expired');
+        return;
+      }
+      remaining--;
+    }
+    tick();
+    state.countdownTimer = setInterval(tick, 1000);
+  }
+
+  // ---------- txn submit ----------
+  document.getElementById('txnForm').addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const input = document.getElementById('txnId');
+    const msg = document.getElementById('formMsg');
+    const val = input.value.trim();
+    if(!val){
+      msg.textContent = 'Enter your transaction ID to continue.';
+      msg.className = 'form-msg err';
+      return;
+    }
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Submitting...';
+
+    const record = {
+      id: genId('TXN'),
+      product: state.product.name,
+      duration: state.duration.label,
+      amount: state.duration.price,
+      transactionId: val,
+      key: '',
+      process: 'pending',
+      createdAt: new Date().toISOString()
+    };
+
+    try{
+      await addTxn(record);
+      clearInterval(state.countdownTimer);
+      msg.textContent = 'Submitted! Redirecting to your history...';
+      msg.className = 'form-msg ok';
+
+      setTimeout(()=>{
+        input.value = '';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit & wait for confirmation';
+        msg.textContent = '';
+        state.product = null; state.duration = null;
+        document.querySelectorAll('.product-card').forEach(c=>c.classList.remove('selected'));
+        document.querySelectorAll('.duration-row').forEach(r=>r.classList.remove('selected'));
+        document.getElementById('durationBlock').style.display = 'none';
+        updateNextBtn();
+        showView('history');
+      }, 1200);
+    }catch(err){
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit & wait for confirmation';
+      msg.textContent = 'Something went wrong. Check your connection and try again.';
+      msg.className = 'form-msg err';
+    }
+  });
+
+  // ---------- history ----------
+  async function renderHistory(){
+    const list = await getTxns();
+    const wrap = document.getElementById('ticketList');
+    if(!list.length){
+      wrap.innerHTML = `<div class="empty-state"><div class="ee-icon">◇</div><div class="ee-text">No orders yet. Head to the shop to get a key.</div></div>`;
+      return;
+    }
+    wrap.innerHTML = list.map(t=>`
+      <div class="ticket">
+        <div class="ticket-left">
+          <div class="ticket-product">${t.product} · ${t.duration} · ₹${t.amount}</div>
+          <div class="ticket-meta">${new Date(t.createdAt).toLocaleString()}</div>
+          <div class="ticket-id">TXN ID: ${escapeHtml(t.transactionId)}</div>
+          ${t.process==='accepted' && t.key ? `
+            <div class="key-reveal">
+              <code>${escapeHtml(t.key)}</code>
+              <button class="copy-btn" onclick="navigator.clipboard.writeText('${escapeAttr(t.key)}').then(()=>{this.textContent='Copied!'; setTimeout(()=>this.textContent='Copy',1500)})">Copy</button>
+            </div>` : ''}
+        </div>
+        <div class="status-pill status-${t.process}">${t.process}</div>
+      </div>
+    `).join('');
+  }
+
+  function escapeHtml(str){
+    return String(str).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function escapeAttr(str){ return String(str).replace(/'/g,"\\'"); }
+
+  // ---------- admin ----------
+  document.getElementById('adminLoginBtn').addEventListener('click', doAdminLogin);
+  document.getElementById('adminPass').addEventListener('keydown', e=>{ if(e.key==='Enter') doAdminLogin(); });
+
+  function doAdminLogin(){
+    const pass = document.getElementById('adminPass').value;
+    const msg = document.getElementById('adminLoginMsg');
+    if(pass === ADMIN_PASSWORD){
+      sessionStorage.setItem('nx_admin','1');
+      document.getElementById('adminPass').value = '';
+      msg.textContent = '';
+      showView('admin');
+    } else {
+      msg.textContent = 'Incorrect password.';
+    }
+  }
+
+  document.getElementById('adminLogoutBtn').addEventListener('click', ()=>{
+    sessionStorage.removeItem('nx_admin');
+    showView('shop');
+  });
+
+  async function renderAdmin(){
+    const list = await getTxns();
+    document.getElementById('statPending').textContent = list.filter(t=>t.process==='pending').length;
+    document.getElementById('statAccepted').textContent = list.filter(t=>t.process==='accepted').length;
+    document.getElementById('statRejected').textContent = list.filter(t=>t.process==='rejected').length;
+
+    const wrap = document.getElementById('adminList');
+    if(!list.length){
+      wrap.innerHTML = `<div class="empty-state"><div class="ee-icon">◇</div><div class="ee-text">No transactions yet.</div></div>`;
+      return;
+    }
+    wrap.innerHTML = list.map(t=>`
+      <div class="admin-row" data-fbkey="${t._fbKey}">
+        <div class="admin-row-top">
+          <div class="admin-row-info">
+            <b>${t.product}</b> · ${t.duration} · ₹${t.amount}<br>
+            TXN ID: <b>${escapeHtml(t.transactionId)}</b><br>
+            ${new Date(t.createdAt).toLocaleString()}
+          </div>
+          <div class="status-pill status-${t.process}">${t.process}</div>
+        </div>
+        <div class="admin-actions">
+          <input type="text" placeholder="Paste key here..." value="${escapeHtml(t.key||'')}" class="key-input">
+          <button class="btn-sm btn-accept">Accept</button>
+          <button class="btn-sm btn-reject">Reject</button>
+        </div>
+      </div>
+    `).join('');
+
+    wrap.querySelectorAll('.admin-row').forEach(row=>{
+      const fbKey = row.dataset.fbkey;
+      row.querySelector('.btn-accept').addEventListener('click', async ()=>{
+        const keyVal = row.querySelector('.key-input').value.trim();
+        if(!keyVal){ alert('Add a key before accepting.'); return; }
+        await patchTxn(fbKey, { process:'accepted', key:keyVal });
+        renderAdmin();
+      });
+      row.querySelector('.btn-reject').addEventListener('click', async ()=>{
+        await patchTxn(fbKey, { process:'rejected' });
+        renderAdmin();
+      });
+    });
+  }
+
+  // auto-refresh history/admin every 8s if visible (simulates near-real-time sync)
+  setInterval(()=>{
+    if(document.getElementById('view-history').classList.contains('active')) renderHistory();
+    if(document.getElementById('view-admin').classList.contains('active')) renderAdmin();
+  }, 8000);
+
+})();
+</script>
+</body>
+</html>
